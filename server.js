@@ -17,7 +17,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ฟังก์ชันส่งข้อความ LINE
+// ฟังก์ชันส่งข้อความ LINE (Push Message)
 async function sendLineMessage(to, messageText) {
   const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
   if (!token || token.includes('วาง_')) return;
@@ -33,11 +33,85 @@ async function sendLineMessage(to, messageText) {
         }
       }
     );
-    console.log('>>> แจ้งเตือนเข้า LINE สำเร็จ');
+    console.log(`>>> แจ้งเตือนเข้า LINE (${to}) สำเร็จ`);
   } catch (error) {
-    console.error('LINE Push Error:', error.response ? error.response.data : error.message);
+    console.error(`LINE Push Error (${to}):`, error.response ? error.response.data : error.message);
   }
 }
+
+// ==========================================
+// 0. LINE Webhook: ลงทะเบียนช่างอัตโนมัติเมื่อกดเพิ่มเพื่อน
+// ==========================================
+app.post('/api/webhook/line', async (req, res) => {
+  try {
+    const events = req.body.events;
+    if (!events || events.length === 0) {
+      return res.status(200).send('OK');
+    }
+
+    const db = await getDB();
+    const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+
+    for (const event of events) {
+      const userId = event.source.userId;
+
+      // เมื่อช่างกด Follow (เพิ่มเพื่อน) หรือ Unblock หรือส่งข้อความว่า "ลงทะเบียนช่าง"
+      if (
+        event.type === 'follow' ||
+        (event.type === 'message' && event.message.type === 'text' && event.message.text.trim() === 'ลงทะเบียนช่าง')
+      ) {
+        try {
+          await db.run(
+            `INSERT OR IGNORE INTO technicians (line_user_id, name, is_active) VALUES (?, ?, 1)`,
+            [userId, 'ช่างซ่อม']
+          );
+          // หากเคยบล็อกไว้แล้วปลดบล็อก ให้เปิดสถานะกลับมาเป็น active
+          await db.run(`UPDATE technicians SET is_active = 1 WHERE line_user_id = ?`, [userId]);
+          console.log(`[LINE Bot] ลงทะเบียนช่างสำเร็จ: ${userId}`);
+
+          // ตอบกลับข้อความอัตโนมัติหาช่าง
+          if (event.replyToken && token) {
+            await axios.post(
+              'https://api.line.me/v2/bot/message/reply',
+              {
+                replyToken: event.replyToken,
+                messages: [
+                  {
+                    type: 'text',
+                    text: '🛠️ ยินดีต้อนรับสู่ระบบแจ้งซ่อม!\nคุณได้ลงทะเบียนเป็นช่างผู้รับการแจ้งเตือนงานซ่อมเรียบร้อยแล้วครับ เมื่อมีผู้แจ้งซ่อมระบบจะส่งงานให้คุณอัตโนมัติ'
+                  }
+                ]
+              },
+              {
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${token}`
+                }
+              }
+            );
+          }
+        } catch (dbErr) {
+          console.error('Error saving technician to DB:', dbErr);
+        }
+      }
+
+      // เมื่อช่างบล็อกบอท (Unfollow) ให้ปิดการแจ้งเตือน
+      if (event.type === 'unfollow') {
+        try {
+          await db.run(`UPDATE technicians SET is_active = 0 WHERE line_user_id = ?`, [userId]);
+          console.log(`[LINE Bot] ปิดการแจ้งเตือนช่าง (Unfollow): ${userId}`);
+        } catch (dbErr) {
+          console.error('Error updating unfollow technician:', dbErr);
+        }
+      }
+    }
+
+    res.status(200).send('OK');
+  } catch (err) {
+    console.error('Webhook Error:', err);
+    res.status(500).send('Error');
+  }
+});
 
 // 1. เข้าสู่ระบบ (Auth)
 app.post('/api/auth/login', async (req, res) => {
@@ -98,7 +172,7 @@ app.get('/api/tickets/check-duplicate', async (req, res) => {
   }
 });
 
-// 4. ส่งฟอร์มแจ้งซ่อมใหม่ + แจ้งเตือนเข้า LINE ช่าง (R1)
+// 4. ส่งฟอร์มแจ้งซ่อมใหม่ + แจ้งเตือนเข้า LINE ช่างทุกคน (R1)
 app.post('/api/tickets', async (req, res) => {
   try {
     const db = await getDB();
@@ -114,7 +188,7 @@ app.post('/api/tickets', async (req, res) => {
     );
     const newTicketId = result.lastID;
 
-    // ดึงข้อมูลอุปกรณ์และสถานที่มาส่ง LINE
+    // ดึงข้อมูลอุปกรณ์และสถานที่มาสร้างข้อความแจ้งเตือน
     const info = await db.get(`
       SELECT e.name as device_name, e.device_code, l.building_name, l.floor, l.room_number
       FROM equipments e
@@ -127,9 +201,20 @@ app.post('/api/tickets', async (req, res) => {
       `• สถานที่: อาคาร ${info ? info.building_name : ''} ชั้น ${info ? info.floor : ''} ห้อง ${info ? info.room_number : ''}\n` +
       `• อาการเสีย: ${description}`;
 
-    const targetLineId = process.env.TEST_LINE_USER_ID;
-    if (targetLineId) {
-      await sendLineMessage(targetLineId, alertText);
+    // ดึงรายชื่อช่างทั้งหมดที่ active จากฐานข้อมูล
+    const technicians = await db.all('SELECT line_user_id FROM technicians WHERE is_active = 1');
+
+    if (technicians && technicians.length > 0) {
+      // กระจายแจ้งเตือนหาช่างทุกคน
+      for (const tech of technicians) {
+        await sendLineMessage(tech.line_user_id, alertText);
+      }
+    } else {
+      // Fallback: ถ้ายังไม่มีช่างลงทะเบียน ให้ส่งหา TEST_LINE_USER_ID สำรอง
+      const fallbackId = process.env.TEST_LINE_USER_ID;
+      if (fallbackId) {
+        await sendLineMessage(fallbackId, alertText);
+      }
     }
 
     res.status(201).json({

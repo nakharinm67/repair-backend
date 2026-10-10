@@ -52,6 +52,15 @@ async function getDB() {
       FOREIGN KEY (device_id) REFERENCES equipments(id),
       FOREIGN KEY (reporter_id) REFERENCES users(id)
     );
+
+    -- ตารางช่างสำหรับระบบแจ้งเตือนผ่าน LINE
+    CREATE TABLE IF NOT EXISTS technicians (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      line_user_id TEXT UNIQUE NOT NULL,
+      name TEXT DEFAULT 'ช่างซ่อม',
+      is_active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   // ตรวจสอบและลงข้อมูลเริ่มต้น (Seed Data)
