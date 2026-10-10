@@ -94,7 +94,7 @@ app.post('/api/webhook/line', async (req, res) => {
       if (event.type === 'message' && event.message.type === 'text') {
         const text = event.message.text.trim();
 
-        // 2.1 ลงทะเบียนเจ้าหน้าที่ช่าง (ตรวจสอบ Email, Password และ Role = 'staff')
+        // 2.1 ลงทะเบียนเจ้าหน้าที่ช่าง
         if (text.startsWith('ลงทะเบียนช่าง')) {
           const parts = text.split(/\s+/);
           const email = parts[1];
@@ -111,7 +111,7 @@ app.post('/api/webhook/line', async (req, res) => {
           }
 
           const user = await db.get(
-            'SELECT * FROM users WHERE email = ? AND password = ? AND role = "staff"',
+            "SELECT * FROM users WHERE email = ? AND password = ? AND role = 'staff'",
             [email.toLowerCase(), password]
           );
 
@@ -135,7 +135,7 @@ app.post('/api/webhook/line', async (req, res) => {
           }
         }
 
-        // 2.2 ลงทะเบียนผู้ใช้งานทั่วไป (ตรวจสอบ Email และ Password)
+        // 2.2 ลงทะเบียนผู้ใช้งานทั่วไป
         else if (text.startsWith('ลงทะเบียน')) {
           const parts = text.split(/\s+/);
           const email = parts[1];
@@ -199,7 +199,8 @@ app.post('/api/auth/login', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-// 1.1 สมัครสมาชิกสำหรับเจ้าหน้าที่ช่าง (Register Staff)
+
+// 1.1 สมัครสมาชิกสำหรับเจ้าหน้าที่ช่าง
 app.post('/api/auth/register-staff', async (req, res) => {
   try {
     const db = await getDB();
@@ -209,15 +210,13 @@ app.post('/api/auth/register-staff', async (req, res) => {
       return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบถ้วน (name, email, password)' });
     }
 
-    // ตรวจสอบว่ามีอีเมลนี้ในระบบแล้วหรือไม่
     const existingUser = await db.get('SELECT * FROM users WHERE email = ?', [email.toLowerCase()]);
     if (existingUser) {
       return res.status(400).json({ message: 'อีเมลนี้ถูกใช้งานไปแล้ว' });
     }
 
-    // บันทึกผู้ใช้ใหม่ กำหนด role เป็น staff ทันที
     const result = await db.run(
-      'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, "staff")',
+      "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, 'staff')",
       [name, email.toLowerCase(), password]
     );
 
@@ -236,7 +235,7 @@ app.post('/api/auth/register-staff', async (req, res) => {
   }
 });
 
-// 1.2 สมัครสมาชิกสำหรับผู้ใช้งานทั่วไป (Register User)
+// 1.2 สมัครสมาชิกสำหรับผู้ใช้งานทั่วไป
 app.post('/api/auth/register', async (req, res) => {
   try {
     const db = await getDB();
@@ -251,9 +250,8 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ message: 'อีเมลนี้ถูกใช้งานไปแล้ว' });
     }
 
-    // บันทึกผู้ใช้ใหม่ กำหนด role เป็น user
     const result = await db.run(
-      'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, "user")',
+      "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, 'user')",
       [name, email.toLowerCase(), password]
     );
 
@@ -272,7 +270,7 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// 2. สแกน QR Code เพื่อดึงข้อมูลอุปกรณ์และสถานที่ (R4)
+// 2. สแกน QR Code รายชิ้น
 app.get('/api/equipments/scan/:device_code', async (req, res) => {
   try {
     const db = await getDB();
@@ -291,19 +289,24 @@ app.get('/api/equipments/scan/:device_code', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-// สแกน QR Code ประจำห้อง เพื่อดึงข้อมูลห้องและรายการอุปกรณ์ทั้งหมดในห้อง
+
+// สแกน QR Code ประจำห้อง (แก้ให้ยืดหยุ่น รองรับทั้ง SC2-307, ROOM-SC2-307 หรือ 307)
 app.get('/api/locations/room/:room_code', async (req, res) => {
   try {
     const db = await getDB();
     const { room_code } = req.params;
 
-    // ตัดคำนำหน้าออกหากสแกนได้รูปแบบ ROOM-SC2-307 เพื่อดึงเฉพาะเลขห้อง 307
-    const cleanRoomNumber = room_code.replace(/^ROOM-[^-]+-/, '');
+    // ดึงเฉพาะตัวเลขห้องท้ายสุด เช่น SC2-307 -> 307 หรือ ROOM-SC2-307 -> 307
+    const parts = room_code.split('-');
+    const extractedNumber = parts[parts.length - 1];
 
-    // 1. ค้นหาข้อมูลห้อง
-    const location = await db.get(
-      'SELECT * FROM locations WHERE room_number = ? OR room_number = ?',
-      [room_code, cleanRoomNumber]
+    // 1. ค้นหาข้อมูลห้อง (ค้นหาจาก room_number โดยตรง หรือค้นหาจาก SC2 + 307)
+    let location = await db.get(
+      `SELECT * FROM locations 
+       WHERE room_number = ? 
+          OR room_number = ? 
+          OR (building_name || '-' || room_number) = ?`,
+      [room_code, extractedNumber, room_code]
     );
 
     if (!location) {
@@ -312,9 +315,10 @@ app.get('/api/locations/room/:room_code', async (req, res) => {
 
     // 2. ดึงรายการอุปกรณ์ทั้งหมดที่อยู่ในห้องนี้
     const equipments = await db.all(
-      `SELECT id as device_id, device_code, name as device_name, status, room_type
+      `SELECT id as device_id, device_code, name as device_name, status
        FROM equipments
-       WHERE location_id = ?`,
+       WHERE location_id = ?
+       ORDER BY id ASC`,
       [location.id]
     );
 
@@ -326,6 +330,7 @@ app.get('/api/locations/room/:room_code', async (req, res) => {
         room_number: location.room_number,
         room_type: location.room_type
       },
+      total_devices: equipments.length,
       equipments: equipments
     });
   } catch (err) {
@@ -333,13 +338,13 @@ app.get('/api/locations/room/:room_code', async (req, res) => {
   }
 });
 
-// 3. ตรวจสอบการแจ้งซ่อมซ้ำ (R2)
+// 3. ตรวจสอบการแจ้งซ่อมซ้ำ
 app.get('/api/tickets/check-duplicate', async (req, res) => {
   try {
     const db = await getDB();
     const { device_id } = req.query;
     const existingTicket = await db.get(
-      'SELECT * FROM tickets WHERE device_id = ? AND status IN ("pending", "in_progress")',
+      "SELECT * FROM tickets WHERE device_id = ? AND status IN ('pending', 'in_progress')",
       [device_id]
     );
 
@@ -356,7 +361,7 @@ app.get('/api/tickets/check-duplicate', async (req, res) => {
   }
 });
 
-// 4. ส่งฟอร์มแจ้งซ่อมใหม่ + แจ้งเตือนเข้า LINE ช่างทุกคน (R1)
+// 4. ส่งฟอร์มแจ้งซ่อมใหม่ + แจ้งเตือนเข้า LINE ช่างทุกคน
 app.post('/api/tickets', async (req, res) => {
   try {
     const db = await getDB();
@@ -367,7 +372,7 @@ app.post('/api/tickets', async (req, res) => {
     }
 
     const result = await db.run(
-      'INSERT INTO tickets (device_id, reporter_id, description, image_url, status) VALUES (?, ?, ?, ?, "pending")',
+      "INSERT INTO tickets (device_id, reporter_id, description, image_url, status) VALUES (?, ?, ?, ?, 'pending')",
       [device_id, reporter_id || 1, description, image_url || null]
     );
     const newTicketId = result.lastID;
@@ -385,7 +390,6 @@ app.post('/api/tickets', async (req, res) => {
       `• สถานที่: อาคาร ${info ? info.building_name : ''} ชั้น ${info ? info.floor : ''} ห้อง ${info ? info.room_number : ''}\n` +
       `• อาการเสีย: ${description}`;
 
-    // ดึงช่างที่ลงทะเบียนและ active ทั้งหมด
     const technicians = await db.all('SELECT line_user_id FROM technicians WHERE is_active = 1');
 
     if (technicians && technicians.length > 0) {
@@ -406,14 +410,13 @@ app.post('/api/tickets', async (req, res) => {
   }
 });
 
-// 5. ช่างอัปเดตสถานะ/ปิดงาน + แจ้งเตือนกลับหาผู้แจ้ง (R5)
+// 5. ช่างอัปเดตสถานะ/ปิดงาน + แจ้งเตือนกลับหาผู้แจ้ง
 app.patch('/api/tickets/:id/status', async (req, res) => {
   try {
     const db = await getDB();
     const ticketId = req.params.id;
     const { status, action_note } = req.body;
 
-    // ดึงข้อมูล ticket พร้อม LINE ID ของผู้แจ้ง
     const ticket = await db.get(`
       SELECT t.*, u.line_user_id as reporter_line_id, e.name as device_name
       FROM tickets t
@@ -429,7 +432,6 @@ app.patch('/api/tickets/:id/status', async (req, res) => {
       [status, action_note, ticketId]
     );
 
-    // ส่งแจ้งเตือนกลับหาผู้แจ้งเมื่อปิดงานสำเร็จ (R5)
     if (status === 'completed') {
       const notifyText = `✅ งานแจ้งซ่อมของคุณได้รับการแก้ไขแล้ว!\n` +
         `• ใบงาน: #${ticketId} (${ticket.device_name || 'อุปกรณ์'})\n` +
@@ -448,14 +450,14 @@ app.patch('/api/tickets/:id/status', async (req, res) => {
   }
 });
 
-// 6. ดึงสถิติ Dashboard สำหรับ Admin (R3)
+// 6. ดึงสถิติ Dashboard สำหรับ Admin
 app.get('/api/admin/dashboard-stats', async (req, res) => {
   try {
     const db = await getDB();
     const total = await db.get('SELECT COUNT(*) as count FROM tickets');
-    const pending = await db.get('SELECT COUNT(*) as count FROM tickets WHERE status = "pending"');
-    const inProgress = await db.get('SELECT COUNT(*) as count FROM tickets WHERE status = "in_progress"');
-    const completed = await db.get('SELECT COUNT(*) as count FROM tickets WHERE status = "completed"');
+    const pending = await db.get("SELECT COUNT(*) as count FROM tickets WHERE status = 'pending'");
+    const inProgress = await db.get("SELECT COUNT(*) as count FROM tickets WHERE status = 'in_progress'");
+    const completed = await db.get("SELECT COUNT(*) as count FROM tickets WHERE status = 'completed'");
 
     res.json({
       summary: {
