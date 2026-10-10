@@ -200,11 +200,13 @@ app.get('/api/admin/dashboard-stats', async (req, res) => {
 async function startServer() {
   try {
     await getDB();
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`🚀 Server is running with SQLite database on port ${PORT}`);
+    const serverPort = process.env.PORT || 5000;
+    app.listen(serverPort, '0.0.0.0', () => {
+      console.log(`🚀 Server is running on port ${serverPort}`);
     });
   } catch (err) {
     console.error('Failed to initialize database:', err);
+    process.exit(1);
   }
 }
 
