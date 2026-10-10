@@ -199,6 +199,78 @@ app.post('/api/auth/login', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// 1.1 สมัครสมาชิกสำหรับเจ้าหน้าที่ช่าง (Register Staff)
+app.post('/api/auth/register-staff', async (req, res) => {
+  try {
+    const db = await getDB();
+    const { name, email, password } = req.body;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบถ้วน (name, email, password)' });
+    }
+
+    // ตรวจสอบว่ามีอีเมลนี้ในระบบแล้วหรือไม่
+    const existingUser = await db.get('SELECT * FROM users WHERE email = ?', [email.toLowerCase()]);
+    if (existingUser) {
+      return res.status(400).json({ message: 'อีเมลนี้ถูกใช้งานไปแล้ว' });
+    }
+
+    // บันทึกผู้ใช้ใหม่ กำหนด role เป็น staff ทันที
+    const result = await db.run(
+      'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, "staff")',
+      [name, email.toLowerCase(), password]
+    );
+
+    res.status(201).json({
+      message: 'สร้างบัญชีเจ้าหน้าที่ช่างสำเร็จ',
+      userId: result.lastID,
+      user: {
+        id: result.lastID,
+        name,
+        email: email.toLowerCase(),
+        role: 'staff'
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 1.2 สมัครสมาชิกสำหรับผู้ใช้งานทั่วไป (Register User)
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const db = await getDB();
+    const { name, email, password } = req.body;
+
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: 'กรุณากรอกข้อมูลให้ครบถ้วน (name, email, password)' });
+    }
+
+    const existingUser = await db.get('SELECT * FROM users WHERE email = ?', [email.toLowerCase()]);
+    if (existingUser) {
+      return res.status(400).json({ message: 'อีเมลนี้ถูกใช้งานไปแล้ว' });
+    }
+
+    // บันทึกผู้ใช้ใหม่ กำหนด role เป็น user
+    const result = await db.run(
+      'INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, "user")',
+      [name, email.toLowerCase(), password]
+    );
+
+    res.status(201).json({
+      message: 'สร้างบัญชีผู้ใช้งานสำเร็จ',
+      userId: result.lastID,
+      user: {
+        id: result.lastID,
+        name,
+        email: email.toLowerCase(),
+        role: 'user'
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // 2. สแกน QR Code เพื่อดึงข้อมูลอุปกรณ์และสถานที่ (R4)
 app.get('/api/equipments/scan/:device_code', async (req, res) => {
