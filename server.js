@@ -291,6 +291,47 @@ app.get('/api/equipments/scan/:device_code', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// สแกน QR Code ประจำห้อง เพื่อดึงข้อมูลห้องและรายการอุปกรณ์ทั้งหมดในห้อง
+app.get('/api/locations/room/:room_code', async (req, res) => {
+  try {
+    const db = await getDB();
+    const { room_code } = req.params;
+
+    // ตัดคำนำหน้าออกหากสแกนได้รูปแบบ ROOM-SC2-307 เพื่อดึงเฉพาะเลขห้อง 307
+    const cleanRoomNumber = room_code.replace(/^ROOM-[^-]+-/, '');
+
+    // 1. ค้นหาข้อมูลห้อง
+    const location = await db.get(
+      'SELECT * FROM locations WHERE room_number = ? OR room_number = ?',
+      [room_code, cleanRoomNumber]
+    );
+
+    if (!location) {
+      return res.status(404).json({ message: 'ไม่พบข้อมูลห้องนี้ในระบบ' });
+    }
+
+    // 2. ดึงรายการอุปกรณ์ทั้งหมดที่อยู่ในห้องนี้
+    const equipments = await db.all(
+      `SELECT id as device_id, device_code, name as device_name, status, room_type
+       FROM equipments
+       WHERE location_id = ?`,
+      [location.id]
+    );
+
+    res.json({
+      location: {
+        id: location.id,
+        building_name: location.building_name,
+        floor: location.floor,
+        room_number: location.room_number,
+        room_type: location.room_type
+      },
+      equipments: equipments
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // 3. ตรวจสอบการแจ้งซ่อมซ้ำ (R2)
 app.get('/api/tickets/check-duplicate', async (req, res) => {
