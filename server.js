@@ -20,7 +20,7 @@ app.use((req, res, next) => {
 // ฟังก์ชันส่งข้อความ LINE (Push Message)
 async function sendLineMessage(to, messageText) {
   const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
-  if (!token || token.includes('วาง_')) return;
+  if (!token || token.includes('วาง_') || !to) return;
 
   try {
     await axios.post(
@@ -39,8 +39,32 @@ async function sendLineMessage(to, messageText) {
   }
 }
 
+// ฟังก์ชันตอบกลับข้อความทันที (Reply Message)
+async function replyLineMessage(replyToken, messageText) {
+  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+  if (!token || !replyToken) return;
+
+  try {
+    await axios.post(
+      'https://api.line.me/v2/bot/message/reply',
+      {
+        replyToken,
+        messages: [{ type: 'text', text: messageText }]
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    );
+  } catch (error) {
+    console.error('LINE Reply Error:', error.response ? error.response.data : error.message);
+  }
+}
+
 // ==========================================
-// 0. LINE Webhook: ลงทะเบียนช่างอัตโนมัติเมื่อกดเพิ่มเพื่อน
+// 0. LINE Webhook: ลงทะเบียนช่าง / ผู้ใช้งาน (พร้อมรหัสผ่าน)
 // ==========================================
 app.post('/api/webhook/line', async (req, res) => {
   try {
@@ -50,59 +74,106 @@ app.post('/api/webhook/line', async (req, res) => {
     }
 
     const db = await getDB();
-    const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 
     for (const event of events) {
       const userId = event.source.userId;
 
-      // เมื่อช่างกด Follow (เพิ่มเพื่อน) หรือ Unblock หรือส่งข้อความว่า "ลงทะเบียนช่าง"
-      if (
-        event.type === 'follow' ||
-        (event.type === 'message' && event.message.type === 'text' && event.message.text.trim() === 'ลงทะเบียนช่าง')
-      ) {
-        try {
-          await db.run(
-            `INSERT OR IGNORE INTO technicians (line_user_id, name, is_active) VALUES (?, ?, 1)`,
-            [userId, 'ช่างซ่อม']
-          );
-          // หากเคยบล็อกไว้แล้วปลดบล็อก ให้เปิดสถานะกลับมาเป็น active
-          await db.run(`UPDATE technicians SET is_active = 1 WHERE line_user_id = ?`, [userId]);
-          console.log(`[LINE Bot] ลงทะเบียนช่างสำเร็จ: ${userId}`);
+      // 1. เมื่อผู้ใช้กด Follow (เพิ่มเพื่อน) หรือ Unblock
+      if (event.type === 'follow') {
+        const welcomeText = `👋 ยินดีต้อนรับสู่ระบบแจ้งซ่อมอุปกรณ์!\n\n` +
+          `🛠️ สำหรับเจ้าหน้าที่ช่าง:\n` +
+          `พิมพ์: ลงทะเบียนช่าง <อีเมล> <รหัสผ่าน>\n` +
+          `(ตัวอย่าง: ลงทะเบียนช่าง staff@test.com 123)\n\n` +
+          `👤 สำหรับผู้แจ้งซ่อม (เพื่อรับผลเมื่อซ่อมเสร็จ):\n` +
+          `พิมพ์: ลงทะเบียน <อีเมล> <รหัสผ่าน>\n` +
+          `(ตัวอย่าง: ลงทะเบียน user@test.com 123)`;
+        await replyLineMessage(event.replyToken, welcomeText);
+      }
 
-          // ตอบกลับข้อความอัตโนมัติหาช่าง
-          if (event.replyToken && token) {
-            await axios.post(
-              'https://api.line.me/v2/bot/message/reply',
-              {
-                replyToken: event.replyToken,
-                messages: [
-                  {
-                    type: 'text',
-                    text: '🛠️ ยินดีต้อนรับสู่ระบบแจ้งซ่อม!\nคุณได้ลงทะเบียนเป็นช่างผู้รับการแจ้งเตือนงานซ่อมเรียบร้อยแล้วครับ เมื่อมีผู้แจ้งซ่อมระบบจะส่งงานให้คุณอัตโนมัติ'
-                  }
-                ]
-              },
-              {
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${token}`
-                }
-              }
+      // 2. เมื่อได้รับข้อความในแชท
+      if (event.type === 'message' && event.message.type === 'text') {
+        const text = event.message.text.trim();
+
+        // 2.1 ลงทะเบียนเจ้าหน้าที่ช่าง (ตรวจสอบ Email, Password และ Role = 'staff')
+        if (text.startsWith('ลงทะเบียนช่าง')) {
+          const parts = text.split(/\s+/);
+          const email = parts[1];
+          const password = parts[2];
+
+          if (!email || !password) {
+            await replyLineMessage(
+              event.replyToken,
+              `⚠️ ข้อมูลไม่ครบถ้วน กรุณาพิมพ์ในรูปแบบ:\n` +
+              `ลงทะเบียนช่าง <อีเมล> <รหัสผ่าน>\n` +
+              `(ตัวอย่าง: ลงทะเบียนช่าง staff@test.com 123)`
+            );
+            continue;
+          }
+
+          const user = await db.get(
+            'SELECT * FROM users WHERE email = ? AND password = ? AND role = "staff"',
+            [email.toLowerCase(), password]
+          );
+
+          if (user) {
+            await db.run('UPDATE users SET line_user_id = ? WHERE id = ?', [userId, user.id]);
+            await db.run(
+              `INSERT INTO technicians (line_user_id, name, is_active) VALUES (?, ?, 1)
+               ON CONFLICT(line_user_id) DO UPDATE SET name = ?, is_active = 1`,
+              [userId, user.name, user.name]
+            );
+
+            await replyLineMessage(
+              event.replyToken,
+              `✅ ยืนยันตัวตนสำเร็จ!\nยินดีต้อนรับคุณ ${user.name} (เจ้าหน้าที่ช่าง)\nระบบจะส่งการแจ้งเตือนงานแจ้งซ่อมใหม่มาที่นี่โดยอัตโนมัติ 🛠️`
+            );
+          } else {
+            await replyLineMessage(
+              event.replyToken,
+              '❌ อีเมลหรือรหัสผ่านไม่ถูกต้อง หรือบัญชีนี้ไม่มีสิทธิ์เป็นเจ้าหน้าที่ช่าง'
             );
           }
-        } catch (dbErr) {
-          console.error('Error saving technician to DB:', dbErr);
+        }
+
+        // 2.2 ลงทะเบียนผู้ใช้งานทั่วไป (ตรวจสอบ Email และ Password)
+        else if (text.startsWith('ลงทะเบียน')) {
+          const parts = text.split(/\s+/);
+          const email = parts[1];
+          const password = parts[2];
+
+          if (!email || !password) {
+            await replyLineMessage(
+              event.replyToken,
+              `⚠️ ข้อมูลไม่ครบถ้วน กรุณาพิมพ์ในรูปแบบ:\n` +
+              `ลงทะเบียน <อีเมล> <รหัสผ่าน>\n` +
+              `(ตัวอย่าง: ลงทะเบียน user@test.com 123)`
+            );
+            continue;
+          }
+
+          const user = await db.get(
+            'SELECT * FROM users WHERE email = ? AND password = ?',
+            [email.toLowerCase(), password]
+          );
+
+          if (user) {
+            await db.run('UPDATE users SET line_user_id = ? WHERE id = ?', [userId, user.id]);
+            await replyLineMessage(
+              event.replyToken,
+              `✅ ผูกบัญชีสำเร็จ!\nสวัสดีคุณ ${user.name} คุณจะได้รับการแจ้งเตือนผ่าน LINE เมื่อช่างปิดงานซ่อมครับ`
+            );
+          } else {
+            await replyLineMessage(
+              event.replyToken,
+              '❌ อีเมลหรือรหัสผ่านไม่ถูกต้อง'
+            );
+          }
         }
       }
 
-      // เมื่อช่างบล็อกบอท (Unfollow) ให้ปิดการแจ้งเตือน
+      // 3. เมื่อช่างบล็อกบอท ให้ปิดสถานะการแจ้งเตือน
       if (event.type === 'unfollow') {
-        try {
-          await db.run(`UPDATE technicians SET is_active = 0 WHERE line_user_id = ?`, [userId]);
-          console.log(`[LINE Bot] ปิดการแจ้งเตือนช่าง (Unfollow): ${userId}`);
-        } catch (dbErr) {
-          console.error('Error updating unfollow technician:', dbErr);
-        }
+        await db.run('UPDATE technicians SET is_active = 0 WHERE line_user_id = ?', [userId]);
       }
     }
 
@@ -201,20 +272,16 @@ app.post('/api/tickets', async (req, res) => {
       `• สถานที่: อาคาร ${info ? info.building_name : ''} ชั้น ${info ? info.floor : ''} ห้อง ${info ? info.room_number : ''}\n` +
       `• อาการเสีย: ${description}`;
 
-    // ดึงรายชื่อช่างทั้งหมดที่ active จากฐานข้อมูล
+    // ดึงช่างที่ลงทะเบียนและ active ทั้งหมด
     const technicians = await db.all('SELECT line_user_id FROM technicians WHERE is_active = 1');
 
     if (technicians && technicians.length > 0) {
-      // กระจายแจ้งเตือนหาช่างทุกคน
       for (const tech of technicians) {
         await sendLineMessage(tech.line_user_id, alertText);
       }
     } else {
-      // Fallback: ถ้ายังไม่มีช่างลงทะเบียน ให้ส่งหา TEST_LINE_USER_ID สำรอง
       const fallbackId = process.env.TEST_LINE_USER_ID;
-      if (fallbackId) {
-        await sendLineMessage(fallbackId, alertText);
-      }
+      if (fallbackId) await sendLineMessage(fallbackId, alertText);
     }
 
     res.status(201).json({
@@ -233,7 +300,15 @@ app.patch('/api/tickets/:id/status', async (req, res) => {
     const ticketId = req.params.id;
     const { status, action_note } = req.body;
 
-    const ticket = await db.get('SELECT * FROM tickets WHERE id = ?', [ticketId]);
+    // ดึงข้อมูล ticket พร้อม LINE ID ของผู้แจ้ง
+    const ticket = await db.get(`
+      SELECT t.*, u.line_user_id as reporter_line_id, e.name as device_name
+      FROM tickets t
+      LEFT JOIN users u ON t.reporter_id = u.id
+      LEFT JOIN equipments e ON t.device_id = e.id
+      WHERE t.id = ?
+    `, [ticketId]);
+
     if (!ticket) return res.status(404).json({ message: 'ไม่พบใบงานซ่อมนี้' });
 
     await db.run(
@@ -241,15 +316,16 @@ app.patch('/api/tickets/:id/status', async (req, res) => {
       [status, action_note, ticketId]
     );
 
+    // ส่งแจ้งเตือนกลับหาผู้แจ้งเมื่อปิดงานสำเร็จ (R5)
     if (status === 'completed') {
-      const notifyText = `✅ งานแจ้งซ่อมของคุณเสร็จสิ้นแล้ว!\n` +
-        `• หมายเลขใบงาน: #${ticketId}\n` +
-        `• ผลการซ่อม: ${action_note || 'ซ่อมแซมเรียบร้อย'}\n` +
-        `ขอบคุณที่แจ้งปัญหาให้เราทราบครับ`;
+      const notifyText = `✅ งานแจ้งซ่อมของคุณได้รับการแก้ไขแล้ว!\n` +
+        `• ใบงาน: #${ticketId} (${ticket.device_name || 'อุปกรณ์'})\n` +
+        `• ผลการซ่อม: ${action_note || 'ซ่อมแซมเรียบร้อยแล้ว'}\n` +
+        `ขอบคุณที่แจ้งปัญหาเข้ามาครับ 🙏`;
 
-      const targetLineId = process.env.TEST_LINE_USER_ID;
-      if (targetLineId) {
-        await sendLineMessage(targetLineId, notifyText);
+      const targetUserLine = ticket.reporter_line_id || process.env.TEST_LINE_USER_ID;
+      if (targetUserLine) {
+        await sendLineMessage(targetUserLine, notifyText);
       }
     }
 
