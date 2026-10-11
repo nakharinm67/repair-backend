@@ -449,6 +449,75 @@ app.patch('/api/tickets/:id/status', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+// ==========================================
+// 5.1 ดึงรายการแจ้งซ่อมทั้งหมด (สำหรับช่าง/แอดมิน)
+// ==========================================
+app.get('/api/tickets', async (req, res) => {
+  try {
+    const db = await getDB();
+    const query = `
+      SELECT 
+        t.id,
+        t.description,
+        t.status,
+        t.action_note,
+        t.created_at,
+        t.updated_at,
+        e.device_code,
+        e.name as device_name,
+        l.building_name,
+        l.floor,
+        l.room_number,
+        u.name as reporter_name
+      FROM tickets t
+      LEFT JOIN equipments e ON t.device_id = e.id
+      LEFT JOIN locations l ON e.location_id = l.id
+      LEFT JOIN users u ON t.reporter_id = u.id
+      ORDER BY t.created_at DESC
+    `;
+
+    const tickets = await db.all(query);
+    res.json(tickets);
+  } catch (err) {
+    console.error('Error fetching tickets:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// 5.2 ดึงรายการแจ้งซ่อมตาม ID ผู้ใช้ (สำหรับหน้า "ประวัติของฉัน")
+// ==========================================
+app.get('/api/tickets/user/:user_id', async (req, res) => {
+  try {
+    const db = await getDB();
+    const { user_id } = req.params;
+    const query = `
+      SELECT 
+        t.id,
+        t.description,
+        t.status,
+        t.action_note,
+        t.created_at,
+        t.updated_at,
+        e.device_code,
+        e.name as device_name,
+        l.building_name,
+        l.floor,
+        l.room_number
+      FROM tickets t
+      LEFT JOIN equipments e ON t.device_id = e.id
+      LEFT JOIN locations l ON e.location_id = l.id
+      WHERE t.reporter_id = ?
+      ORDER BY t.created_at DESC
+    `;
+
+    const tickets = await db.all(query, [user_id]);
+    res.json(tickets);
+  } catch (err) {
+    console.error('Error fetching user tickets:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // 6. ดึงสถิติ Dashboard สำหรับ Admin
 app.get('/api/admin/dashboard-stats', async (req, res) => {
