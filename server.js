@@ -398,7 +398,7 @@ app.post('/api/tickets', async (req, res) => {
     // สร้างข้อความแจ้งเตือนให้อ่านง่าย สบายตา
     const alertText = 
       `🚨 แจ้งซ่อมใหม่ (Ticket #${newTicketId})\n` +
-      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `━━━━━━━━━━━━━━━━━━\n` +
       `💻 อุปกรณ์: ${info ? info.device_name : 'ID ' + device_id}\n` +
       `🏷️ รหัส: ${info ? info.device_code : '-'}\n` +
       `📍 สถานที่: อาคาร ${info ? info.building_name : '-'} ชั้น ${info ? info.floor : '-'} (ห้อง ${info ? info.room_number : '-'})\n` +
@@ -552,6 +552,136 @@ app.get('/api/admin/dashboard-stats', async (req, res) => {
         completed: completed.count
       }
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// ==========================================
+// ROOMS (จัดการห้อง / Locations)
+// ==========================================
+
+// 1. ดึงรายการห้องทั้งหมด
+app.get('/api/rooms', async (req, res) => {
+  try {
+    const db = await getDB();
+    const rooms = await db.all('SELECT * FROM locations ORDER BY id ASC');
+    res.json(rooms);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. เพิ่มห้องใหม่
+app.post('/api/rooms', async (req, res) => {
+  try {
+    const db = await getDB();
+    const { building_name, floor, room_number, room_type } = req.body;
+    const result = await db.run(
+      'INSERT INTO locations (building_name, floor, room_number, room_type) VALUES (?, ?, ?, ?)',
+      [building_name || '', floor || '', room_number, room_type || '']
+    );
+    res.status(201).json({ message: 'สร้างห้องสำเร็จ', id: result.lastID });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. แก้ไขข้อมูลห้อง
+app.put('/api/rooms/:id', async (req, res) => {
+  try {
+    const db = await getDB();
+    const { id } = req.params;
+    const { building_name, floor, room_number, room_type } = req.body;
+    await db.run(
+      `UPDATE locations 
+       SET building_name = COALESCE(?, building_name),
+           floor = COALESCE(?, floor),
+           room_number = COALESCE(?, room_number),
+           room_type = COALESCE(?, room_type)
+       WHERE id = ?`,
+      [building_name, floor, room_number, room_type, id]
+    );
+    res.json({ message: 'อัปเดตห้องสำเร็จ' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. ลบห้อง
+app.delete('/api/rooms/:id', async (req, res) => {
+  try {
+    const db = await getDB();
+    const { id } = req.params;
+    await db.run('DELETE FROM locations WHERE id = ?', [id]);
+    res.json({ message: 'ลบห้องสำเร็จ' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ==========================================
+// EQUIPMENTS (จัดการอุปกรณ์)
+// ==========================================
+
+// 1. ดึงรายการอุปกรณ์ทั้งหมด (พร้อมข้อมูลห้อง)
+app.get('/api/equipments', async (req, res) => {
+  try {
+    const db = await getDB();
+    const equipments = await db.all(`
+      SELECT e.*, l.building_name, l.floor, l.room_number, l.room_type
+      FROM equipments e
+      LEFT JOIN locations l ON e.location_id = l.id
+      ORDER BY e.id ASC
+    `);
+    res.json(equipments);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. เพิ่มอุปกรณ์ใหม่
+app.post('/api/equipments', async (req, res) => {
+  try {
+    const db = await getDB();
+    const { device_code, name, location_id, status } = req.body;
+    const result = await db.run(
+      'INSERT INTO equipments (device_code, name, location_id, status) VALUES (?, ?, ?, ?)',
+      [device_code, name, location_id || null, status || 'active']
+    );
+    res.status(201).json({ message: 'เพิ่มอุปกรณ์สำเร็จ', id: result.lastID });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 3. แก้ไขข้อมูลอุปกรณ์
+app.put('/api/equipments/:id', async (req, res) => {
+  try {
+    const db = await getDB();
+    const { id } = req.params;
+    const { device_code, name, location_id, status } = req.body;
+    await db.run(
+      `UPDATE equipments 
+       SET device_code = COALESCE(?, device_code),
+           name = COALESCE(?, name),
+           location_id = COALESCE(?, location_id),
+           status = COALESCE(?, status)
+       WHERE id = ?`,
+      [device_code, name, location_id, status, id]
+    );
+    res.json({ message: 'อัปเดตอุปกรณ์สำเร็จ' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. ลบอุปกรณ์
+app.delete('/api/equipments/:id', async (req, res) => {
+  try {
+    const db = await getDB();
+    const { id } = req.params;
+    await db.run('DELETE FROM equipments WHERE id = ?', [id]);
+    res.json({ message: 'ลบอุปกรณ์สำเร็จ' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
