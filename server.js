@@ -377,18 +377,33 @@ app.post('/api/tickets', async (req, res) => {
     );
     const newTicketId = result.lastID;
 
-    // ดึงข้อมูลอุปกรณ์และสถานที่มาสร้างข้อความแจ้งเตือน
+    // ดึงข้อมูลอุปกรณ์, สถานที่ และชื่อผู้แจ้ง
     const info = await db.get(`
-      SELECT e.name as device_name, e.device_code, l.building_name, l.floor, l.room_number
+      SELECT 
+        e.name as device_name, 
+        e.device_code, 
+        l.building_name, 
+        l.floor, 
+        l.room_number,
+        u.name as reporter_name
       FROM equipments e
       JOIN locations l ON e.location_id = l.id
+      LEFT JOIN users u ON u.id = ?
       WHERE e.id = ?
-    `, [device_id]);
+    `, [reporter_id || 1, device_id]);
 
-    const alertText = `🔧 มีงานแจ้งซ่อมใหม่! (Ticket #${newTicketId})\n` +
-      `• อุปกรณ์: ${info ? info.device_name : 'ID ' + device_id} (${info ? info.device_code : ''})\n` +
-      `• สถานที่: อาคาร ${info ? info.building_name : ''} ชั้น ${info ? info.floor : ''} ห้อง ${info ? info.room_number : ''}\n` +
-      `• อาการเสีย: ${description}`;
+    // ตัดข้อความนำหน้าส่วนเกินใน description หากแอปส่งแท็ก [..] ติดมาด้วย
+    const cleanDescription = description.replace(/^(\[[^\]]+\]\s*)+/g, '').trim();
+
+    // สร้างข้อความแจ้งเตือนให้อ่านง่าย สบายตา
+    const alertText = 
+      `🚨 แจ้งซ่อมใหม่ (Ticket #${newTicketId})\n` +
+      `━━━━━━━━━━━━━━━━━━━━\n` +
+      `💻 อุปกรณ์: ${info ? info.device_name : 'ID ' + device_id}\n` +
+      `🏷️ รหัส: ${info ? info.device_code : '-'}\n` +
+      `📍 สถานที่: อาคาร ${info ? info.building_name : '-'} ชั้น ${info ? info.floor : '-'} (ห้อง ${info ? info.room_number : '-'})\n` +
+      `👤 ผู้แจ้ง: ${info ? info.reporter_name : 'ผู้ใช้งานทั่วไป'}\n` +
+      `⚠️ อาการเสีย: ${cleanDescription}`;
 
     const technicians = await db.all('SELECT line_user_id FROM technicians WHERE is_active = 1');
 
@@ -406,6 +421,7 @@ app.post('/api/tickets', async (req, res) => {
       ticket_id: newTicketId
     });
   } catch (err) {
+    console.error('Create Ticket Error:', err);
     res.status(500).json({ error: err.message });
   }
 });
