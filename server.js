@@ -385,7 +385,8 @@ app.post('/api/tickets', async (req, res) => {
         l.building_name, 
         l.floor, 
         l.room_number,
-        u.name as reporter_name
+        u.name as reporter_name,
+        u.email as reporter_email
       FROM equipments e
       JOIN locations l ON e.location_id = l.id
       LEFT JOIN users u ON u.id = ?
@@ -395,14 +396,19 @@ app.post('/api/tickets', async (req, res) => {
     // ตัดข้อความนำหน้าส่วนเกินใน description หากแอปส่งแท็ก [..] ติดมาด้วย
     const cleanDescription = description.replace(/^(\[[^\]]+\]\s*)+/g, '').trim();
 
-    // สร้างข้อความแจ้งเตือนให้อ่านง่าย สบายตา
+    // 2. จัดรูปแบบชื่อผู้แจ้ง + อีเมล/รหัสนิสิต
+    const reporterDisplay = info && info.reporter_email
+      ? `${info.reporter_name || 'ผู้ใช้งาน'} (${info.reporter_email})`
+      : (info?.reporter_name || 'ผู้ใช้งานทั่วไป');
+
+    // 3. สร้างข้อความแจ้งเตือนส่งเข้า LINE ช่าง
     const alertText = 
       `🚨 แจ้งซ่อมใหม่ (Ticket #${newTicketId})\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
       `💻 อุปกรณ์: ${info ? info.device_name : 'ID ' + device_id}\n` +
       `🏷️ รหัส: ${info ? info.device_code : '-'}\n` +
       `📍 สถานที่: อาคาร ${info ? info.building_name : '-'} ชั้น ${info ? info.floor : '-'} (ห้อง ${info ? info.room_number : '-'})\n` +
-      `👤 ผู้แจ้ง: ${info ? info.reporter_name : 'ผู้ใช้งานทั่วไป'}\n` +
+      `👤 ผู้แจ้ง: ${reporterDisplay}\n` +
       `⚠️ อาการเสีย: ${cleanDescription}`;
 
     const technicians = await db.all('SELECT line_user_id FROM technicians WHERE is_active = 1');
