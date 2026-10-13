@@ -13,7 +13,7 @@ function convertPlaceholders(sql) {
 }
 
 async function initPostgres(pool) {
-  // 1. สร้างโครงสร้างตารางสำหรับ PostgreSQL
+  // 1. สร้างโครงสร้างตารางสำหรับ PostgreSQL (เพิ่ม device_type)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
@@ -36,6 +36,7 @@ async function initPostgres(pool) {
       id SERIAL PRIMARY KEY,
       device_code VARCHAR(50) UNIQUE NOT NULL,
       name VARCHAR(100) NOT NULL,
+      device_type VARCHAR(50) DEFAULT 'คอมพิวเตอร์',
       location_id INT REFERENCES locations(id),
       status VARCHAR(20) DEFAULT 'active'
     );
@@ -59,6 +60,19 @@ async function initPostgres(pool) {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  // อัปเดตคอลัมน์ device_type อัตโนมัติบน Render
+  try {
+    await pool.query(`
+      ALTER TABLE equipments ADD COLUMN IF NOT EXISTS device_type VARCHAR(50) DEFAULT 'คอมพิวเตอร์';
+      UPDATE equipments SET device_type = 'คอมพิวเตอร์' WHERE device_code LIKE 'PC-%';
+      UPDATE equipments SET device_type = 'เครื่องปรับอากาศ' WHERE device_code LIKE 'AC-%';
+      UPDATE equipments SET device_type = 'โปรเจกเตอร์' WHERE device_code LIKE 'PJ-%';
+      UPDATE equipments SET device_type = 'ระบบเครื่องเสียง' WHERE device_code LIKE 'AV-%';
+    `);
+    console.log('>>> Auto-migration device_type สำเร็จ!');
+  } catch (err) {
+    console.log('Migration note:', err.message);
+  }
 
   // 2. ตรวจสอบและลงข้อมูลเริ่มต้น (Seed Data)
   const locCount = await pool.query('SELECT COUNT(*) as count FROM locations');
@@ -85,35 +99,35 @@ async function initPostgres(pool) {
     for (let i = 1; i <= 80; i++) {
       const padNum = String(i).padStart(2, '0');
       await pool.query(
-        `INSERT INTO equipments (device_code, name, location_id) VALUES ($1, $2, $3)`,
-        [`PC-SC2-307-${padNum}`, `เครื่องคอมพิวเตอร์นักศึกษา เครื่องที่ ${i}`, locId]
+        `INSERT INTO equipments (device_code, name, device_type, location_id) VALUES ($1, $2, $3, $4)`,
+        [`PC-SC2-307-${padNum}`, `เครื่องคอมพิวเตอร์นักศึกษา เครื่องที่ ${i}`, 'คอมพิวเตอร์', locId]
       );
     }
 
     // คอมพิวเตอร์อาจารย์ 1 เครื่อง
     await pool.query(
-      `INSERT INTO equipments (device_code, name, location_id) VALUES ($1, $2, $3)`,
-      ['PC-SC2-307-TEACHER', 'เครื่องคอมพิวเตอร์ผู้สอน/อาจารย์', locId]
+      `INSERT INTO equipments (device_code, name, device_type, location_id) VALUES ($1, $2, $3, $4)`,
+      ['PC-SC2-307-TEACHER', 'เครื่องคอมพิวเตอร์ผู้สอน/อาจารย์', 'คอมพิวเตอร์', locId]
     );
 
     // เครื่องปรับอากาศ 4 เครื่อง
     for (let i = 1; i <= 4; i++) {
       await pool.query(
-        `INSERT INTO equipments (device_code, name, location_id) VALUES ($1, $2, $3)`,
-        [`AC-SC2-307-0${i}`, `เครื่องปรับอากาศ แอร์ตัวที่ ${i}`, locId]
+        `INSERT INTO equipments (device_code, name, device_type, location_id) VALUES ($1, $2, $3, $4)`,
+        [`AC-SC2-307-0${i}`, `เครื่องปรับอากาศ แอร์ตัวที่ ${i}`, 'เครื่องปรับอากาศ', locId]
       );
     }
 
     // เครื่องโปรเจกเตอร์ 1 ตัว
     await pool.query(
-      `INSERT INTO equipments (device_code, name, location_id) VALUES ($1, $2, $3)`,
-      ['PJ-SC2-307-01', 'เครื่องโปรเจกเตอร์ Epson', locId]
+      `INSERT INTO equipments (device_code, name, device_type, location_id) VALUES ($1, $2, $3, $4)`,
+      ['PJ-SC2-307-01', 'เครื่องโปรเจกเตอร์ Epson', 'โปรเจกเตอร์', locId]
     );
 
     // ระบบเครื่องเสียง 1 ชุด
     await pool.query(
-      `INSERT INTO equipments (device_code, name, location_id) VALUES ($1, $2, $3)`,
-      ['AV-SC2-307-01', 'ระบบเครื่องเสียงและแอมป์ขยายเสียง', locId]
+      `INSERT INTO equipments (device_code, name, device_type, location_id) VALUES ($1, $2, $3, $4)`,
+      ['AV-SC2-307-01', 'ระบบเครื่องเสียงและแอมป์ขยายเสียง', 'ระบบเครื่องเสียง', locId]
     );
 
     console.log('>>> เพิ่มข้อมูลอุปกรณ์ห้อง SC2-307 ลง PostgreSQL ครบถ้วนเรียบร้อย!');
@@ -124,7 +138,6 @@ async function getDB() {
   if (dbInstance) return dbInstance;
 
   if (process.env.DATABASE_URL) {
-    // โหมด PostgreSQL สำหรับ Production/Render
     console.log('>>> เชื่อมต่อฐานข้อมูล: PostgreSQL');
     const pool = new Pool({
       connectionString: process.env.DATABASE_URL,
@@ -133,7 +146,6 @@ async function getDB() {
 
     await initPostgres(pool);
 
-    // จำลอง Method ของ SQLite (get, all, run) เพื่อให้ server.js ใช้งานต่อได้ทันที
     dbInstance = {
       get: async (sql, params = []) => {
         const res = await pool.query(convertPlaceholders(sql), params);
@@ -159,7 +171,6 @@ async function getDB() {
       }
     };
   } else {
-    // โหมด SQLite สำหรับรันแบบ Local
     console.log('>>> เชื่อมต่อฐานข้อมูล: Local SQLite');
     dbInstance = await open({
       filename: path.join(__dirname, 'repair_system.db'),

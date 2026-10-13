@@ -270,12 +270,12 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// 2. สแกน QR Code รายชิ้น
+// 2. สแกน QR Code รายชิ้น (เพิ่มดึง device_type)
 app.get('/api/equipments/scan/:device_code', async (req, res) => {
   try {
     const db = await getDB();
     const query = `
-      SELECT e.id as device_id, e.device_code, e.name as device_name, e.status as device_status,
+      SELECT e.id as device_id, e.device_code, e.name as device_name, e.device_type, e.status as device_status,
              l.building_name, l.floor, l.room_number, l.room_type
       FROM equipments e
       JOIN locations l ON e.location_id = l.id
@@ -290,17 +290,15 @@ app.get('/api/equipments/scan/:device_code', async (req, res) => {
   }
 });
 
-// สแกน QR Code ประจำห้อง (แก้ให้ยืดหยุ่น รองรับทั้ง SC2-307, ROOM-SC2-307 หรือ 307)
+// สแกน QR Code ประจำห้อง (เพิ่มดึง device_type)
 app.get('/api/locations/room/:room_code', async (req, res) => {
   try {
     const db = await getDB();
     const { room_code } = req.params;
 
-    // ดึงเฉพาะตัวเลขห้องท้ายสุด เช่น SC2-307 -> 307 หรือ ROOM-SC2-307 -> 307
     const parts = room_code.split('-');
     const extractedNumber = parts[parts.length - 1];
 
-    // 1. ค้นหาข้อมูลห้อง (ค้นหาจาก room_number โดยตรง หรือค้นหาจาก SC2 + 307)
     let location = await db.get(
       `SELECT * FROM locations 
        WHERE room_number = ? 
@@ -313,9 +311,9 @@ app.get('/api/locations/room/:room_code', async (req, res) => {
       return res.status(404).json({ message: 'ไม่พบข้อมูลห้องนี้ในระบบ' });
     }
 
-    // 2. ดึงรายการอุปกรณ์ทั้งหมดที่อยู่ในห้องนี้
+    // ดึงรายการอุปกรณ์ทั้งหมดในห้อง พร้อม device_type
     const equipments = await db.all(
-      `SELECT id as device_id, device_code, name as device_name, status
+      `SELECT id as device_id, id, device_code, name as device_name, name, device_type, status
        FROM equipments
        WHERE location_id = ?
        ORDER BY id ASC`,
@@ -361,7 +359,7 @@ app.get('/api/tickets/check-duplicate', async (req, res) => {
   }
 });
 
-// 4. ส่งฟอร์มแจ้งซ่อมใหม่ + แจ้งเตือนเข้า LINE ช่างทุกคน
+// 4. ส่งฟอร์มแจ้งซ่อมใหม่ + แจ้งเตือนเข้า LINE ช่างทุกคน (แสดงชื่อและอีเมล/รหัสนิสิต)
 app.post('/api/tickets', async (req, res) => {
   try {
     const db = await getDB();
@@ -377,11 +375,12 @@ app.post('/api/tickets', async (req, res) => {
     );
     const newTicketId = result.lastID;
 
-    // ดึงข้อมูลอุปกรณ์, สถานที่ และชื่อผู้แจ้ง
+    // ดึงข้อมูลอุปกรณ์, ประเภทอุปกรณ์, สถานที่, และผู้แจ้ง
     const info = await db.get(`
       SELECT 
         e.name as device_name, 
-        e.device_code, 
+        e.device_code,
+        e.device_type,
         l.building_name, 
         l.floor, 
         l.room_number,
@@ -393,20 +392,20 @@ app.post('/api/tickets', async (req, res) => {
       WHERE e.id = ?
     `, [reporter_id || 1, device_id]);
 
-    // ตัดข้อความนำหน้าส่วนเกินใน description หากแอปส่งแท็ก [..] ติดมาด้วย
+    // ตัดแท็กส่วนเกินหากหน้าแอพส่งติดมา
     const cleanDescription = description.replace(/^(\[[^\]]+\]\s*)+/g, '').trim();
 
-    // 2. จัดรูปแบบชื่อผู้แจ้ง + อีเมล/รหัสนิสิต
+    // แสดงชื่อพร้อมอีเมล/รหัสนิสิต
     const reporterDisplay = info && info.reporter_email
       ? `${info.reporter_name || 'ผู้ใช้งาน'} (${info.reporter_email})`
       : (info?.reporter_name || 'ผู้ใช้งานทั่วไป');
 
-    // 3. สร้างข้อความแจ้งเตือนส่งเข้า LINE ช่าง
     const alertText = 
       `🚨 แจ้งซ่อมใหม่ (Ticket #${newTicketId})\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
       `💻 อุปกรณ์: ${info ? info.device_name : 'ID ' + device_id}\n` +
       `🏷️ รหัส: ${info ? info.device_code : '-'}\n` +
+      `📂 ประเภท: ${info ? (info.device_type || 'คอมพิวเตอร์') : '-'}\n` +
       `📍 สถานที่: อาคาร ${info ? info.building_name : '-'} ชั้น ${info ? info.floor : '-'} (ห้อง ${info ? info.room_number : '-'})\n` +
       `👤 ผู้แจ้ง: ${reporterDisplay}\n` +
       `⚠️ อาการเสีย: ${cleanDescription}`;
@@ -471,6 +470,7 @@ app.patch('/api/tickets/:id/status', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 // ==========================================
 // 5.1 ดึงรายการแจ้งซ่อมทั้งหมด (สำหรับช่าง/แอดมิน)
 // ==========================================
@@ -486,10 +486,12 @@ app.get('/api/tickets', async (req, res) => {
         t.created_at,
         e.device_code,
         e.name as device_name,
+        e.device_type,
         l.building_name,
         l.floor,
         l.room_number,
-        u.name as reporter_name
+        u.name as reporter_name,
+        u.email as reporter_email
       FROM tickets t
       LEFT JOIN equipments e ON t.device_id = e.id
       LEFT JOIN locations l ON e.location_id = l.id
@@ -521,6 +523,7 @@ app.get('/api/tickets/user/:user_id', async (req, res) => {
         t.created_at,
         e.device_code,
         e.name as device_name,
+        e.device_type,
         l.building_name,
         l.floor,
         l.room_number
@@ -560,11 +563,11 @@ app.get('/api/admin/dashboard-stats', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 // ==========================================
 // ROOMS (จัดการห้อง / Locations)
 // ==========================================
 
-// 1. ดึงรายการห้องทั้งหมด
 app.get('/api/rooms', async (req, res) => {
   try {
     const db = await getDB();
@@ -575,7 +578,6 @@ app.get('/api/rooms', async (req, res) => {
   }
 });
 
-// 2. เพิ่มห้องใหม่
 app.post('/api/rooms', async (req, res) => {
   try {
     const db = await getDB();
@@ -590,7 +592,6 @@ app.post('/api/rooms', async (req, res) => {
   }
 });
 
-// 3. แก้ไขข้อมูลห้อง
 app.put('/api/rooms/:id', async (req, res) => {
   try {
     const db = await getDB();
@@ -611,7 +612,6 @@ app.put('/api/rooms/:id', async (req, res) => {
   }
 });
 
-// 4. ลบห้อง
 app.delete('/api/rooms/:id', async (req, res) => {
   try {
     const db = await getDB();
@@ -627,7 +627,6 @@ app.delete('/api/rooms/:id', async (req, res) => {
 // EQUIPMENTS (จัดการอุปกรณ์)
 // ==========================================
 
-// 1. ดึงรายการอุปกรณ์ทั้งหมด (พร้อมข้อมูลห้อง)
 app.get('/api/equipments', async (req, res) => {
   try {
     const db = await getDB();
@@ -643,14 +642,13 @@ app.get('/api/equipments', async (req, res) => {
   }
 });
 
-// 2. เพิ่มอุปกรณ์ใหม่
 app.post('/api/equipments', async (req, res) => {
   try {
     const db = await getDB();
-    const { device_code, name, location_id, status } = req.body;
+    const { device_code, name, device_type, location_id, status } = req.body;
     const result = await db.run(
-      'INSERT INTO equipments (device_code, name, location_id, status) VALUES (?, ?, ?, ?)',
-      [device_code, name, location_id || null, status || 'active']
+      'INSERT INTO equipments (device_code, name, device_type, location_id, status) VALUES (?, ?, ?, ?, ?)',
+      [device_code, name, device_type || 'คอมพิวเตอร์', location_id || null, status || 'active']
     );
     res.status(201).json({ message: 'เพิ่มอุปกรณ์สำเร็จ', id: result.lastID });
   } catch (err) {
@@ -658,20 +656,20 @@ app.post('/api/equipments', async (req, res) => {
   }
 });
 
-// 3. แก้ไขข้อมูลอุปกรณ์
 app.put('/api/equipments/:id', async (req, res) => {
   try {
     const db = await getDB();
     const { id } = req.params;
-    const { device_code, name, location_id, status } = req.body;
+    const { device_code, name, device_type, location_id, status } = req.body;
     await db.run(
       `UPDATE equipments 
        SET device_code = COALESCE(?, device_code),
            name = COALESCE(?, name),
+           device_type = COALESCE(?, device_type),
            location_id = COALESCE(?, location_id),
            status = COALESCE(?, status)
        WHERE id = ?`,
-      [device_code, name, location_id, status, id]
+      [device_code, name, device_type, location_id, status, id]
     );
     res.json({ message: 'อัปเดตอุปกรณ์สำเร็จ' });
   } catch (err) {
@@ -679,7 +677,6 @@ app.put('/api/equipments/:id', async (req, res) => {
   }
 });
 
-// 4. ลบอุปกรณ์
 app.delete('/api/equipments/:id', async (req, res) => {
   try {
     const db = await getDB();
